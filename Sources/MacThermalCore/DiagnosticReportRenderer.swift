@@ -77,9 +77,23 @@ public enum DiagnosticReportRenderer {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .memory)
     }
 
+    /// Quotes a CSV field, and defuses spreadsheet formula injection.
+    ///
+    /// Process names come from `ps comm=`, i.e. real executable basenames, which
+    /// an attacker controls by naming a binary `=HYPERLINK(...)`. Excel, Numbers,
+    /// and Sheets evaluate a cell starting with `= + - @` (or a tab/CR before
+    /// one), so the leading character is escaped with a single quote — the
+    /// convention those apps understand — before the field is quoted. `\r` is
+    /// treated as a line break too: alone it is a classic-Mac newline that splits
+    /// the record in several parsers.
     private static func csvEscape(_ value: String) -> String {
-        guard value.contains(",") || value.contains("\"") || value.contains("\n") else { return value }
-        return "\"\(value.replacing("\"", with: "\"\""))\""
+        let neutralized = value.first.map { "=+-@\t\r".contains($0) ? "'" + value : value } ?? value
+        let needsQuoting = neutralized.contains(",")
+            || neutralized.contains("\"")
+            || neutralized.contains("\n")
+            || neutralized.contains("\r")
+        guard needsQuoting else { return neutralized }
+        return "\"\(neutralized.replacing("\"", with: "\"\""))\""
     }
 
     private static func htmlEscape(_ value: String) -> String {

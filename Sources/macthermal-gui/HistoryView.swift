@@ -30,6 +30,7 @@ struct HistoryView: View {
                             alertThresholdCelsius: settings.alertsEnabled ? settings.alertThresholdCelsius : nil,
                             scope: $settings.temperatureChartScope
                         )
+                        .equatable()
                         .frame(minHeight: 320)
 
                         HistorySummaryGrid(samples: displayedSamples, unit: settings.unit)
@@ -47,7 +48,8 @@ struct HistoryView: View {
             let cutoff = Date.now.addingTimeInterval(-range.duration)
             displayedSamples = try await AnalyticsEngine.shared.recentSamples(
                 archive.history,
-                since: cutoff
+                since: cutoff,
+                chronological: archive.historyIsChronological
             )
         } catch is CancellationError {
             return

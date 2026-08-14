@@ -52,9 +52,15 @@ final class AppSettings: ObservableObject {
         maximumStoredIncidents = defaults.object(forKey: "maximumStoredIncidents") as? Int ?? 25
     }
 
-    var alertConfiguration: AlertConfiguration {
+    /// The alert rules, disabled unless a notification can actually be delivered.
+    ///
+    /// `ThermalAlertEvaluator.evaluate` mutates state as it decides — it starts
+    /// the cooldown and consumes the pressure rising edge. Evaluating while the
+    /// app has no notification permission would therefore burn a cooldown nobody
+    /// saw, silencing the first real alert after the user grants permission.
+    func alertConfiguration(notificationsAuthorized: Bool) -> AlertConfiguration {
         AlertConfiguration(
-            enabled: alertsEnabled,
+            enabled: alertsEnabled && notificationsAuthorized,
             thresholdCelsius: alertThresholdCelsius,
             sustainedDuration: sustainedAlertSeconds,
             cooldown: alertCooldownMinutes * 60,

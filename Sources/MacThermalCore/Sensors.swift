@@ -100,6 +100,18 @@ public func fanLevel(_ u: Double) -> (label: String, severity: Severity) {
     }
 }
 
+/// Hysteresis below the user's hotspot threshold: once a hot period has begun
+/// it only ends when the hotspot drops this far under the threshold.
+///
+/// Shared by all three consumers of the threshold — notifications
+/// (`ThermalAlertEvaluator`), automatic capture (`AutomaticIncidentDetector`),
+/// and the timeline (`ThermalEventAnalyzer`) — so they cannot disagree about
+/// when an episode ended. Without it the notification path restarts its
+/// "continuously hot" timer on any single sub-threshold reading, and at the
+/// 2-second cadence the app polls under load, ordinary SMC noise then silences
+/// the alert for an episode the other two still record.
+public let thermalRecoveryMarginCelsius = 3.0
+
 // MARK: - OS thermal pressure
 //
 // The Apple Silicon-supported equivalent of the legacy Intel `pmset -g therm`

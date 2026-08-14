@@ -45,7 +45,11 @@ struct ThermalEventsView: View {
     private func updateEvents() async {
         do {
             let cutoff = Date.now.addingTimeInterval(-range.duration)
-            let samples = try await AnalyticsEngine.shared.recentSamples(archive.history, since: cutoff)
+            let samples = try await AnalyticsEngine.shared.recentSamples(
+                archive.history,
+                since: cutoff,
+                chronological: archive.historyIsChronological
+            )
             events = try await AnalyticsEngine.shared.events(
                 samples,
                 thresholdCelsius: settings.alertThresholdCelsius

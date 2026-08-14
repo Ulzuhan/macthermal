@@ -8,14 +8,20 @@ import MacThermalCore
 actor AnalyticsEngine {
     static let shared = AnalyticsEngine()
 
-    func recentSamples(_ samples: [ThermalSample], since cutoff: Date) throws -> [ThermalSample] {
-        var recent: [ThermalSample] = []
-        recent.reserveCapacity(samples.count)
-        for (index, sample) in samples.enumerated() {
-            if index.isMultiple(of: 256) { try Task.checkCancellation() }
-            if sample.timestamp >= cutoff { recent.append(sample) }
-        }
-        return recent
+    func recentSamples(
+        _ samples: [ThermalSample],
+        since cutoff: Date,
+        chronological: Bool = true
+    ) throws -> [ThermalSample] {
+        try Task.checkCancellation()
+        let result = ThermalSampleWindow.recent(
+            samples,
+            since: cutoff,
+            chronological: chronological,
+            isCancelled: { Task.isCancelled }
+        )
+        try Task.checkCancellation()
+        return result
     }
 
     func temperatureChartSamples(

@@ -13,7 +13,12 @@ struct TemperatureHistoryChart: View {
     @State private var renderedSamples: [ThermalSample] = []
     @State private var availableScopes: [TemperatureChartScope] = [.overall]
 
-    private static let maximumRenderedSamples = 1_000
+    // Each rendered sample emits up to three marks (area + hotspot line + average
+    // line) through `.catmullRom`, so this is really a ~3× mark budget. At 1,000
+    // it was 3,000 splined marks for a chart a few hundred points wide — past the
+    // point where extra samples change a single pixel, and the dominant cost of a
+    // dashboard redraw.
+    private static let maximumRenderedSamples = 400
 
     var body: some View {
         let selectedScope = availableScopes.contains(scope) ? scope : .overall
@@ -120,5 +125,29 @@ struct TemperatureHistoryChart: View {
             renderedSamples = nextSamples
             availableScopes = TemperatureChartScope.available(in: nextSamples)
         }
+    }
+}
+
+// The conformance is main-actor isolated: `View` conformers are `@MainActor`, so
+// reading the stored inputs (including the `scope` binding) from a `nonisolated`
+// `==` would cross isolation. SwiftUI only compares views while rendering, on the
+// main actor, so scoping the conformance there is both accurate and sufficient.
+extension TemperatureHistoryChart: @MainActor Equatable {
+    /// Compared on rendering inputs only.
+    ///
+    /// `OverviewView` shows this chart next to live metrics, so it observes the
+    /// sensor state and re-evaluates every 2–3 seconds while the dashboard is
+    /// open — which re-laid out a splined chart whose data only changes once per
+    /// history interval. Applying `.equatable()` lets SwiftUI skip that.
+    ///
+    /// The sample window is identified the same O(1) way the analysis tasks
+    /// identify it (count plus endpoint ids) rather than by comparing hundreds of
+    /// samples element-wise, and the `scope` binding is compared by value: its
+    /// setter is a write path that cannot change what is drawn.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.unit == rhs.unit
+            && lhs.alertThresholdCelsius == rhs.alertThresholdCelsius
+            && lhs.scope == rhs.scope
+            && SampleRevision(lhs.samples) == SampleRevision(rhs.samples)
     }
 }

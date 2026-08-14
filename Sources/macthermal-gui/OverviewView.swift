@@ -19,7 +19,6 @@ struct OverviewView: View {
                     TemperatureBreakdownView(groups: live.temperatureGroups, unit: settings.unit)
                     FanOverviewView(fans: live.fans)
                     RecentActivityView(
-                        samples: Array(archive.history.suffix(120)),
                         unit: settings.unit,
                         scope: $settings.temperatureChartScope
                     )

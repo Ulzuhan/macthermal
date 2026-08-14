@@ -23,7 +23,8 @@ public struct AutomaticIncidentDetector: Sendable {
         thresholdCelsius: Double,
         sustainedDuration: TimeInterval,
         recoveryDuration: TimeInterval,
-        now: Date
+        now: Date,
+        recoveryMarginCelsius: Double = thermalRecoveryMarginCelsius
     ) -> AutomaticIncidentTransition? {
         guard automaticCaptureEnabled && (pressureEnabled || temperatureEnabled) else {
             let shouldStop = activeTrigger != nil
@@ -62,7 +63,7 @@ public struct AutomaticIncidentDetector: Sendable {
 
         guard activeTrigger != nil else { return nil }
         let pressureKeepsRecording = pressureEnabled && pressureIsActive
-        let recoveryThreshold = thresholdCelsius - 3
+        let recoveryThreshold = thresholdCelsius - max(0, recoveryMarginCelsius)
         // Temperature hysteresis only holds a *temperature*-triggered incident
         // open. A pressure-triggered one recovers on pressure clearing, so a warm
         // reading below the start threshold can't stretch it indefinitely.

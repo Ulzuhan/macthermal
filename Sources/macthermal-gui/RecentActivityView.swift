@@ -3,10 +3,22 @@ import SwiftUI
 import MacThermalCore
 #endif
 
+/// The Overview's history chart.
+///
+/// It windows `archive.history` itself instead of taking a slice from its
+/// parent: `OverviewView` also renders live metrics, so its body runs on every
+/// sensor refresh (every 2–3 seconds with the dashboard open) and a
+/// `suffix(120)` computed there handed the chart a brand-new array each time.
+/// Holding the window in `@State`, refreshed only when the history revision
+/// changes, keeps the chart's inputs stable between sensor ticks so
+/// `.equatable()` can skip the redraw.
 struct RecentActivityView: View {
-    let samples: [ThermalSample]
     let unit: TempUnit
     @Binding var scope: TemperatureChartScope
+    @EnvironmentObject private var archive: ThermalArchiveState
+    @State private var samples: [ThermalSample] = []
+
+    private static let windowSize = 120
 
     var body: some View {
         GroupBox("Recent activity") {
@@ -21,8 +33,12 @@ struct RecentActivityView: View {
                     alertThresholdCelsius: nil,
                     scope: $scope
                 )
+                    .equatable()
                     .frame(minHeight: 220)
             }
+        }
+        .task(id: SampleRevision(archive.history)) {
+            samples = Array(archive.history.suffix(Self.windowSize))
         }
     }
 }
