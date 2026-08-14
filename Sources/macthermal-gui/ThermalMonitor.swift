@@ -64,6 +64,9 @@ final class ThermalMonitor: ObservableObject {
     private var activeIncidentJournalAvailable = false
     private var incidentRevision = 0
     private var incidentPersistenceTask: Task<Void, Never>?
+    private var historyReloadTask: Task<Void, Never>?
+    private var loadedRetentionDays: Int?
+    private var cancellables: Set<AnyCancellable> = []
     private var loginItemRequestID = UUID()
     private var userChangedLoginItem = false
     private var panelPresented = false
@@ -72,6 +75,13 @@ final class ThermalMonitor: ObservableObject {
     private let backgroundRefreshInterval: TimeInterval = 9
     private let interactiveRefreshInterval: TimeInterval = 3
     private let elevatedRefreshInterval: TimeInterval = 2
+    // Low Power Mode is an explicit request to stop doing background work. Only
+    // the idle path is stretched: an open panel still feels live, and elevated
+    // heat or an active recording keeps full resolution, because that is when
+    // the samples are worth the most. The `ps` spawn is stretched hardest — it
+    // forks a process, which costs far more than reading the SMC.
+    private let lowPowerBackgroundRefreshInterval: TimeInterval = 30
+    private let lowPowerProcessInterval: TimeInterval = 60
     private let automaticIncidentPreRoll: TimeInterval = 2 * 60
     private let maximumInMemoryHistoryDays = 14
     private let memoryTrimInterval: TimeInterval = 60 * 60
@@ -180,18 +190,60 @@ final class ThermalMonitor: ObservableObject {
 
     private func initialize() async {
         liveState.setAvailable(await reader.available)
+        // Get a temperature on screen first. Everything below is slow: the
+        // login-item and notification queries are XPC round-trips, and the
+        // history load decodes the whole NDJSON file — ~0.7 s for 14 days at a
+        // 30-second interval, and twice that at 15 seconds. Sampling used to wait
+        // behind all of it, so the menu bar showed "––" for that long on every
+        // launch. The two now race deliberately: `installLoadedHistory` keeps
+        // whatever was recorded before the decode finished, whichever order the
+        // store's actor serializes them in.
+        beginRefresh(priority: .userInitiated)
+
         let storedLaunchAtLogin = await loginItemManager.isEnabled()
         if !userChangedLoginItem { launchAtLogin = storedLaunchAtLogin }
         notificationsAuthorized = await notificationManager.authorizationStatus() == .authorized
+
+        let retentionDays = settings.retentionDays
         let stored = await historyStore.load(
-            retentionDays: settings.retentionDays,
-            inMemoryDays: min(settings.retentionDays, maximumInMemoryHistoryDays),
+            retentionDays: retentionDays,
+            inMemoryDays: min(retentionDays, maximumInMemoryHistoryDays),
             incidentRetentionDays: settings.incidentRetentionDays,
             maximumStoredIncidents: settings.maximumStoredIncidents
         )
-        archiveState.replaceHistory(with: stored.samples)
+        archiveState.installLoadedHistory(stored.samples)
         archiveState.replaceIncidents(with: stored.incidents)
-        beginRefresh(priority: .utility)
+        loadedRetentionDays = retentionDays
+        observeRetentionChanges()
+    }
+
+    /// Retention is read once, when history is loaded. Raising it has to re-read
+    /// the file or the extra days stay on disk, invisible: the longer comparison
+    /// ranges unlock in the UI and then report "not enough data" over history
+    /// that is sitting right there. Lowering it re-prunes immediately instead of
+    /// waiting up to a day for the next scheduled compaction.
+    private func observeRetentionChanges() {
+        settings.$retentionDays
+            .removeDuplicates()
+            .sink { [weak self] days in
+                guard let self, days != self.loadedRetentionDays else { return }
+                self.reloadStoredHistory(retentionDays: days)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func reloadStoredHistory(retentionDays: Int) {
+        loadedRetentionDays = retentionDays
+        historyReloadTask?.cancel()
+        historyReloadTask = Task { [weak self] in
+            guard let self else { return }
+            let samples = await self.historyStore.reloadHistoryWindow(
+                retentionDays: retentionDays,
+                inMemoryDays: min(retentionDays, self.maximumInMemoryHistoryDays)
+            )
+            guard !Task.isCancelled else { return }
+            self.archiveState.installLoadedHistory(samples)
+        }
     }
 
     private func performRefresh() async {
@@ -206,15 +258,30 @@ final class ThermalMonitor: ObservableObject {
             now.timeIntervalSince($0) >= settings.historyInterval
         } ?? true
         let incidentWasActive = isRecordingIncident && (incidentStartedAt ?? .distantFuture) <= now
+        // An active recording keeps the normal cadence even in Low Power Mode:
+        // process attribution is the point of the recording.
+        let dueProcessInterval = isLowPowerModeEnabled && !isRecordingIncident
+            ? lowPowerProcessInterval
+            : processInterval
         let processDue = lastProcessAt.map {
-            now.timeIntervalSince($0) >= processInterval
+            now.timeIntervalSince($0) >= dueProcessInterval
         } ?? true
 
         if processDue && (historyDue || incidentWasActive) {
-            cachedProcesses = await processSampler.capture()
+            // Only mint a new snapshot identity when `ps` actually produced one.
+            // A failed run used to be stored as an empty process list under a
+            // fresh ID, which analytics then counted as a genuine observation of
+            // "every process idle" and averaged into the contributor ranking.
+            // Keeping the previous snapshot instead lets `uniqueByProcessSnapshot`
+            // collapse the affected samples into the one real reading they share.
+            if let processes = await processSampler.capture() {
+                cachedProcesses = processes
+                cachedProcessSnapshotID = UUID()
+                cachedProcessSampledAt = now
+            }
+            // Recorded either way, so a persistently failing `ps` is retried on
+            // its usual cadence rather than on every refresh.
             lastProcessAt = now
-            cachedProcessSnapshotID = UUID()
-            cachedProcessSampledAt = now
         }
 
         let sample = ThermalSample(
@@ -224,11 +291,14 @@ final class ThermalMonitor: ObservableObject {
             processSampledAt: cachedProcessSampledAt,
             timestamp: now
         )
+        // Authorization is folded into the configuration rather than checked on
+        // the result: `evaluate` starts the cooldown as it decides, so evaluating
+        // without permission would burn one on an alert nobody could receive.
         if let reason = alertEvaluator.evaluate(
             sample: sample,
-            configuration: settings.alertConfiguration,
+            configuration: settings.alertConfiguration(notificationsAuthorized: notificationsAuthorized),
             now: now
-        ), notificationsAuthorized {
+        ) {
             await notificationManager.send(reason)
         }
 
@@ -244,7 +314,6 @@ final class ThermalMonitor: ObservableObject {
         )
         await handleAutomaticIncidentTransition(automaticTransition, now: now)
 
-        let incidentIsActive = isRecordingIncident && (incidentStartedAt ?? .distantFuture) <= now
         if historyDue {
             archiveState.appendHistory(sample)
             trimInMemoryHistoryIfNeeded(now: now)
@@ -256,7 +325,11 @@ final class ThermalMonitor: ObservableObject {
             }
         }
 
-        guard incidentIsActive else { return }
+        // Re-read the recording state instead of a value captured before the
+        // awaits above: this method suspends, and "Stop" can land in that window.
+        // Acting on the stale flag appended a sample to the already-reset buffer
+        // and left the UI reporting a sample count for a recording that ended.
+        guard isRecordingIncident, (incidentStartedAt ?? .distantFuture) <= now else { return }
         incidentSamples.append(sample)
         incidentSampleCount = incidentSamples.count
         if activeIncidentJournalAvailable {
@@ -317,6 +390,8 @@ final class ThermalMonitor: ObservableObject {
             activityInterval = elevatedRefreshInterval
         } else if panelPresented || dashboardPresented {
             activityInterval = interactiveRefreshInterval
+        } else if isLowPowerModeEnabled {
+            activityInterval = lowPowerBackgroundRefreshInterval
         } else {
             activityInterval = backgroundRefreshInterval
         }
@@ -324,6 +399,13 @@ final class ThermalMonitor: ObservableObject {
         guard let lastHistoryAt else { return activityInterval }
         let historyRemaining = settings.historyInterval - Date.now.timeIntervalSince(lastHistoryAt)
         return min(activityInterval, max(0.5, historyRemaining))
+    }
+
+    /// Read fresh on each reschedule rather than cached: the user can toggle Low
+    /// Power Mode at any time, and the next timer picks the change up within one
+    /// interval without needing a notification observer.
+    private var isLowPowerModeEnabled: Bool {
+        ProcessInfo.processInfo.isLowPowerModeEnabled
     }
 
     private func isElevated(_ severity: Severity) -> Bool {

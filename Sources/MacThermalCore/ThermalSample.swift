@@ -8,10 +8,10 @@ public struct ThermalSample: Codable, Equatable, Identifiable, Sendable {
     public let timestamp: Date
     public let hottestCelsius: Double
     public let averageCelsius: Double
-    public let categoryPeaks: [String: Double]
+    public let categoryPeaks: CategoryTemperatures
     /// Optional for backward compatibility with history recorded before
     /// per-category averages were introduced.
-    public let categoryAverages: [String: Double]?
+    public let categoryAverages: CategoryTemperatures?
     public let fanRPM: [Double]
     public let fanUtilization: [Double]
     public let thermalStateName: String
@@ -27,8 +27,8 @@ public struct ThermalSample: Codable, Equatable, Identifiable, Sendable {
         timestamp: Date = .now,
         hottestCelsius: Double,
         averageCelsius: Double,
-        categoryPeaks: [String: Double],
-        categoryAverages: [String: Double]? = nil,
+        categoryPeaks: CategoryTemperatures,
+        categoryAverages: CategoryTemperatures? = nil,
         fanRPM: [Double],
         fanUtilization: [Double],
         thermalStateName: String,
@@ -59,13 +59,13 @@ public struct ThermalSample: Codable, Equatable, Identifiable, Sendable {
         processSampledAt: Date? = nil,
         timestamp: Date = .now
     ) {
-        var peaks: [String: Double] = [:]
-        var averages: [String: Double] = [:]
+        var peaks = CategoryTemperatures()
+        var averages = CategoryTemperatures()
         for category in Category.allCases {
             let readings = snapshot.group(category)
             if let hottest = readings.first?.celsius {
-                peaks[category.rawValue] = hottest
-                averages[category.rawValue] = readings.averageCelsius
+                peaks[category] = hottest
+                averages[category] = readings.averageCelsius
             }
         }
 

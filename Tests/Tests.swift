@@ -76,7 +76,33 @@ struct Tests {
         )
     }
 
-    static func main() {
+    /// A sample anchored to a real `Date`, for the persistence tests — the
+    /// epoch-based `sample(seconds:)` above predates every retention window.
+    static func sample(at date: Date, hotspot: Double) -> ThermalSample {
+        ThermalSample(
+            timestamp: date,
+            hottestCelsius: hotspot,
+            averageCelsius: hotspot - 10,
+            categoryPeaks: ["CPU": hotspot],
+            categoryAverages: ["CPU": hotspot - 10],
+            fanRPM: [2_000],
+            fanUtilization: [20],
+            thermalStateName: "nominal",
+            thermalSeverity: .ok,
+            topProcesses: []
+        )
+    }
+
+    /// A fresh scratch directory, so each persistence test starts from a known
+    /// empty state (`HistoryStore` keys everything off one folder).
+    static func scratchDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appending(path: "macthermal-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    static func main() async {
         // --- SMC value decoding (the fixed-point / float encodings) ---
         eq(value("sp78", [0x3D, 0x00]).double, 61.0, "sp78 0x3D00 = 61.0")
         eq(value("sp78", [0x1E, 0x80]).double, 30.5, "sp78 0x1E80 = 30.5")
@@ -655,11 +681,227 @@ struct Tests {
         _ = sustainedEval.evaluate(sample: sample(seconds: 3, hotspot: 91), configuration: noCooldownCfg, now: at(3))
         let notYetSustained = sustainedEval.evaluate(sample: sample(seconds: 11, hotspot: 91), configuration: noCooldownCfg, now: at(11))
         expect(notYetSustained == nil,
-               "a sub-threshold dip restarts the sustained timer even when a pressure alert fired")
+               "a dip past the recovery margin restarts the sustained timer even when a pressure alert fired")
+
+        // --- alert evaluator: hysteresis matches automatic capture and the
+        //     timeline, so all three agree on when a hot period ended ---
+        var hysteresisEval = ThermalAlertEvaluator()
+        _ = hysteresisEval.evaluate(sample: sample(seconds: 0, hotspot: 95), configuration: noCooldownCfg, now: at(0))
+        // 88 °C is under the 90 °C threshold but inside the 3 °C recovery margin:
+        // ordinary SMC noise, not the end of the episode.
+        _ = hysteresisEval.evaluate(sample: sample(seconds: 4, hotspot: 88), configuration: noCooldownCfg, now: at(4))
+        let survivesNoise = hysteresisEval.evaluate(sample: sample(seconds: 10, hotspot: 94), configuration: noCooldownCfg, now: at(10))
+        expect(survivesNoise == .sustainedTemperature(celsius: 94),
+               "a dip inside the recovery margin does not restart the sustained timer")
+        expect(thermalRecoveryMarginCelsius == 3,
+               "the shared recovery margin keeps its documented value")
+
+        // --- category temperatures: inline storage, unchanged on-disk shape ---
+        var categories = CategoryTemperatures()
+        expect(categories.isEmpty, "a new category set is empty")
+        expect(categories[.cpu] == nil, "an absent category reads as nil, not zero")
+        categories[.cpu] = 71.5
+        categories["GPU"] = 60
+        categories["NotACategory"] = 99
+        eq(categories["CPU"], 71.5, "category values round-trip through the string subscript")
+        expect(categories["NotACategory"] == nil, "an unknown category key is ignored")
+        expect(categories.categories == [.cpu, .gpu], "present categories are reported in canonical order")
+        categories[.cpu] = nil
+        expect(categories[.cpu] == nil && categories[.gpu] == 60,
+               "clearing one category leaves the others intact")
+
+        let categoryJSON = try? JSONEncoder().encode(
+            CategoryTemperatures(["CPU": 70.5, "Battery": 33])
+        )
+        let categoryText = categoryJSON.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        expect(categoryText.contains("\"CPU\":70.5") && categoryText.contains("\"Battery\":33"),
+               "categories encode as a plain rawValue-keyed map")
+        expect(!categoryText.contains("Memory"), "absent categories are omitted rather than zeroed")
+        // History written by earlier builds used a dictionary, so key order was
+        // arbitrary and unknown keys were possible. Both must still decode.
+        let legacyCategories = try? JSONDecoder().decode(
+            CategoryTemperatures.self,
+            from: Data(#"{"Other":41,"CPU":70.5,"Unknown":12}"#.utf8)
+        )
+        eq(legacyCategories?["CPU"], 70.5, "legacy category JSON decodes regardless of key order")
+        eq(legacyCategories?["Other"], 41, "legacy category JSON keeps every known key")
+
+        // --- CSV export: spreadsheet formula injection is defused ---
+        let injectionSample = ThermalSample(
+            timestamp: Date(timeIntervalSince1970: 0),
+            hottestCelsius: 70, averageCelsius: 60,
+            categoryPeaks: ["CPU": 70], categoryAverages: ["CPU": 60],
+            fanRPM: [], fanUtilization: [],
+            thermalStateName: "nominal", thermalSeverity: .ok,
+            topProcesses: [ProcessUsage(pid: 1, name: "=HYPERLINK(\"http://evil\")", cpuPercent: 9)]
+        )
+        let injectionCSV = DiagnosticReportRenderer.csv(samples: [injectionSample])
+        expect(injectionCSV.contains("\"'=HYPERLINK"),
+               "a process name that looks like a formula is escaped and quoted")
+        expect(!injectionCSV.contains(",=HYPERLINK"),
+               "no CSV field starts a bare formula")
+        let carriageReturnSample = ThermalSample(
+            timestamp: Date(timeIntervalSince1970: 0),
+            hottestCelsius: 70, averageCelsius: 60,
+            categoryPeaks: ["CPU": 70], categoryAverages: ["CPU": 60],
+            fanRPM: [], fanUtilization: [],
+            thermalStateName: "nom\rinal", thermalSeverity: .ok,
+            topProcesses: []
+        )
+        expect(DiagnosticReportRenderer.csv(samples: [carriageReturnSample]).contains("\"nom\rinal\""),
+               "a carriage return is quoted so it cannot split the record")
+
+        // --- sample windowing: the binary search matches an exhaustive filter ---
+        let ordered = (0..<500).map { sample(seconds: Double($0) * 30, hotspot: 50) }
+        let windowCutoff = Date(timeIntervalSince1970: 300 * 30)
+        let fastWindow = ThermalSampleWindow.recent(ordered, since: windowCutoff)
+        let slowWindow = ordered.filter { $0.timestamp >= windowCutoff }
+        expect(fastWindow == slowWindow, "the binary-searched window matches the filtered one")
+        expect(ThermalSampleWindow.recent(ordered, since: Date(timeIntervalSince1970: -1)).count == 500,
+               "a cutoff before every sample keeps the whole series")
+        expect(ThermalSampleWindow.recent(ordered, since: Date(timeIntervalSince1970: 1e9)).isEmpty,
+               "a cutoff after every sample yields nothing")
+        expect(ThermalSampleWindow.recent([], since: windowCutoff).isEmpty, "an empty series windows to empty")
+        // A backwards clock jump breaks the ordering the search relies on, so the
+        // caller reports it and the exhaustive path takes over.
+        var jumbled = ordered
+        jumbled.insert(sample(seconds: 499 * 30, hotspot: 50), at: 0)
+        let jumbledWindow = ThermalSampleWindow.recent(jumbled, since: windowCutoff, chronological: false)
+        expect(jumbledWindow.count == slowWindow.count + 1,
+               "an out-of-order series falls back to the exhaustive filter")
+
+        await runPersistenceTests()
 
         let tag = failures == 0 ? "ok" : "FAILED"
         let summary = "macthermal tests: \(checks - failures)/\(checks) passed — \(tag)\n"
         FileHandle.standardOutput.write(summary.data(using: .utf8)!)
         exit(failures == 0 ? 0 : 1)
+    }
+
+    /// `HistoryStore` against a scratch directory — no SMC, no Application
+    /// Support. This is the part of the app most likely to lose user data: it
+    /// appends NDJSON, tolerates a line a crash cut in half, compacts through a
+    /// temporary file, and rebuilds an incident whose recording never ended.
+    static func runPersistenceTests() async {
+        let manager = FileManager.default
+
+        // --- append then load round-trips, newest window first ---
+        let roundTripDirectory = scratchDirectory()
+        defer { try? manager.removeItem(at: roundTripDirectory) }
+        let store = HistoryStore(directory: roundTripDirectory)
+        let now = Date.now
+        for offset in 0..<3 {
+            try? await store.append(
+                sample(at: now.addingTimeInterval(Double(offset - 3) * 60), hotspot: 70 + Double(offset)),
+                retentionDays: 7
+            )
+        }
+        var loaded = await store.load(
+            retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+        )
+        expect(loaded.samples.count == 3, "appended samples reload from NDJSON")
+        eq(loaded.samples.last?.hottestCelsius, 72, "reloaded samples keep append order")
+        eq(loaded.samples.first?.categoryPeaks["CPU"], 70, "reloaded samples keep their component peaks")
+
+        // --- a last line truncated by a crash must not void earlier samples ---
+        let historyURL = roundTripDirectory.appending(path: "history.ndjson")
+        if let handle = try? FileHandle(forWritingTo: historyURL) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(#"{"timestamp":1,"hottest"#.utf8))
+            try? handle.close()
+        }
+        loaded = await store.load(
+            retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+        )
+        expect(loaded.samples.count == 3, "a truncated final line is skipped, earlier samples survive")
+
+        // --- compaction drops samples past retention, keeps the rest ---
+        let pruneDirectory = scratchDirectory()
+        defer { try? manager.removeItem(at: pruneDirectory) }
+        let pruneStore = HistoryStore(directory: pruneDirectory)
+        let stale = sample(at: now.addingTimeInterval(-10 * 86_400), hotspot: 60)
+        let fresh = sample(at: now.addingTimeInterval(-60), hotspot: 80)
+        // A store with no prune stamp compacts on its first append, which is what
+        // puts both of these through the retention filter.
+        try? await pruneStore.append(stale, retentionDays: 7)
+        try? await pruneStore.append(fresh, retentionDays: 7)
+        let afterPrune = await pruneStore.load(
+            retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+        )
+        expect(afterPrune.samples.count == 1, "compaction drops samples past the retention window")
+        eq(afterPrune.samples.first?.hottestCelsius, 80, "compaction keeps the samples inside retention")
+        let pruneStamp = pruneDirectory.appending(path: ".last-history-prune")
+        expect(manager.fileExists(atPath: pruneStamp.path),
+               "the prune run is stamped so the next append does not repeat it")
+
+        // --- an interrupted recording is recovered on the next launch ---
+        let recoveryDirectory = scratchDirectory()
+        defer { try? manager.removeItem(at: recoveryDirectory) }
+        let crashedStore = HistoryStore(directory: recoveryDirectory)
+        let incidentID = UUID()
+        try? await crashedStore.beginActiveIncident(
+            id: incidentID,
+            name: "Export run",
+            startedAt: now.addingTimeInterval(-120),
+            trigger: .manual,
+            samples: [sample(at: now.addingTimeInterval(-120), hotspot: 85)]
+        )
+        try? await crashedStore.appendActiveIncident(sample(at: now.addingTimeInterval(-60), hotspot: 92))
+        try? await crashedStore.flushActiveIncident()
+
+        // A second store on the same directory stands in for the next launch.
+        let relaunchedStore = HistoryStore(directory: recoveryDirectory)
+        let recovered = await relaunchedStore.load(
+            retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+        )
+        expect(recovered.incidents.count == 1, "an unfinished recording is recovered")
+        expect(recovered.incidents.first?.id == incidentID, "recovery keeps the incident's identity")
+        expect(recovered.incidents.first?.samples.count == 2, "recovery keeps every journaled sample")
+        expect(recovered.incidents.first?.name.hasSuffix("(recovered)") == true,
+               "a recovered incident is labelled as such")
+        expect(!manager.fileExists(atPath: recoveryDirectory.appending(path: "active-incident.json").path),
+               "the journal is cleared once its incident has been folded in")
+        let recoveredAgain = await relaunchedStore.load(
+            retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+        )
+        expect(recoveredAgain.incidents.count == 1, "recovery does not duplicate on a later launch")
+
+        // --- a crash mid-compaction must not strand its temporary ---
+        let orphanDirectory = scratchDirectory()
+        defer { try? manager.removeItem(at: orphanDirectory) }
+        let orphan = orphanDirectory.appending(path: "history-\(UUID().uuidString).tmp")
+        try? Data("stranded".utf8).write(to: orphan)
+        let sweepingStore = HistoryStore(directory: orphanDirectory)
+        _ = await sweepingStore.load(
+            retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+        )
+        expect(!manager.fileExists(atPath: orphan.path), "a stranded compaction temporary is swept on load")
+
+        // --- out-of-order incident writes cannot resurrect stale state ---
+        let revisionDirectory = scratchDirectory()
+        defer { try? manager.removeItem(at: revisionDirectory) }
+        let revisionStore = HistoryStore(directory: revisionDirectory)
+        let keptIncident = ThermalIncident(
+            name: "Newer", startedAt: now.addingTimeInterval(-60), endedAt: now, samples: [], trigger: .manual
+        )
+        try? await revisionStore.saveIncidents([keptIncident], revision: 5)
+        try? await revisionStore.saveIncidents([], revision: 4)
+        let afterRevisions = await revisionStore.load(
+            retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+        )
+        expect(afterRevisions.incidents.count == 1,
+               "a late write from an older revision does not overwrite a newer one")
+
+        // --- a retention change re-reads the window without touching incidents ---
+        let reloadDirectory = scratchDirectory()
+        defer { try? manager.removeItem(at: reloadDirectory) }
+        let reloadStore = HistoryStore(directory: reloadDirectory)
+        try? await reloadStore.append(sample(at: now.addingTimeInterval(-3 * 86_400), hotspot: 65), retentionDays: 30)
+        try? await reloadStore.append(sample(at: now.addingTimeInterval(-60), hotspot: 75), retentionDays: 30)
+        let wideWindow = await reloadStore.reloadHistoryWindow(retentionDays: 30, inMemoryDays: 14)
+        expect(wideWindow.count == 2, "a wider window re-reads the samples already on disk")
+        let narrowWindow = await reloadStore.reloadHistoryWindow(retentionDays: 1, inMemoryDays: 1)
+        expect(narrowWindow.count == 1, "a narrower window drops what retention no longer covers")
+        eq(narrowWindow.first?.hottestCelsius, 75, "the narrowed window keeps the most recent samples")
     }
 }

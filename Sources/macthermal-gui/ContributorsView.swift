@@ -46,7 +46,11 @@ struct ContributorsView: View {
     private func updateContributors() async {
         do {
             let cutoff = Date.now.addingTimeInterval(-range.duration)
-            let samples = try await AnalyticsEngine.shared.recentSamples(archive.history, since: cutoff)
+            let samples = try await AnalyticsEngine.shared.recentSamples(
+                archive.history,
+                since: cutoff,
+                chronological: archive.historyIsChronological
+            )
             contributors = try await AnalyticsEngine.shared.heatContributors(samples)
         } catch is CancellationError {
             return

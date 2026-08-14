@@ -1,9 +1,14 @@
 import Foundation
-#if canImport(MacThermalCore)
-import MacThermalCore
-#endif
 
-actor HistoryStore {
+/// Local persistence for thermal history and incident recordings.
+///
+/// Lives in the core rather than beside the UI: it touches only Foundation and
+/// the sample/incident models, and it holds the most failure-prone logic in the
+/// project — append-only NDJSON, tolerance for a last line truncated by a crash,
+/// daily compaction through a temporary file, and recovery of an incident whose
+/// recording never got to finish. All of that is testable without hardware, and
+/// `init(directory:)` exists so tests can point it at a scratch folder.
+public actor HistoryStore {
     private let directory: URL
     private let historyURL: URL
     private let incidentsURL: URL
@@ -17,8 +22,9 @@ actor HistoryStore {
     private let pruneInterval: TimeInterval = 24 * 60 * 60
     private let activeSyncInterval = 5
 
-    init() {
-        let directory = URL.applicationSupportDirectory.appending(path: "MacThermal", directoryHint: .isDirectory)
+    public init(directory: URL? = nil) {
+        let directory = directory
+            ?? URL.applicationSupportDirectory.appending(path: "MacThermal", directoryHint: .isDirectory)
         let pruneStampURL = directory.appending(path: ".last-history-prune")
         self.directory = directory
         historyURL = directory.appending(path: "history.ndjson")
@@ -29,13 +35,14 @@ actor HistoryStore {
         lastPruneAt = Self.loadPruneDate(from: pruneStampURL)
     }
 
-    func load(
+    public func load(
         retentionDays: Int,
         inMemoryDays: Int,
         incidentRetentionDays: Int,
         maximumStoredIncidents: Int
     ) -> (samples: [ThermalSample], incidents: [ThermalIncident]) {
         createDirectoryIfNeeded()
+        removeOrphanedPruneTemporaries()
         let historyCutoff = Calendar.current.date(byAdding: .day, value: -inMemoryDays, to: .now) ?? .distantPast
         let decoder = JSONDecoder()
         let samples = (try? loadSamples(from: historyURL, since: historyCutoff, decoder: decoder)) ?? []
@@ -69,13 +76,36 @@ actor HistoryStore {
         }
 
         // Disk retention remains independent from the smaller in-memory window.
+        // Stamping the run here matters: without it the very next `append` sees
+        // no recorded prune and rewrites the whole file a second time.
         if lastPruneAt == nil {
             try? prune(retentionDays: retentionDays)
+            let now = Date.now
+            lastPruneAt = now
+            try? persistPruneDate(now)
         }
         return (samples, incidents)
     }
 
-    func append(_ sample: ThermalSample, retentionDays: Int) throws {
+    /// Re-reads only the in-memory sample window, for a retention change.
+    ///
+    /// Deliberately narrower than `load`: it must not re-run active-incident
+    /// recovery, and it must not return an incident list that could clobber one
+    /// this session recorded but has not finished persisting. Disk retention is
+    /// applied immediately instead of waiting for the next daily prune, so
+    /// lowering retention frees space when the user asks for it.
+    public func reloadHistoryWindow(retentionDays: Int, inMemoryDays: Int) -> [ThermalSample] {
+        createDirectoryIfNeeded()
+        let now = Date.now
+        try? prune(retentionDays: retentionDays)
+        lastPruneAt = now
+        try? persistPruneDate(now)
+
+        let cutoff = Calendar.current.date(byAdding: .day, value: -inMemoryDays, to: now) ?? .distantPast
+        return (try? loadSamples(from: historyURL, since: cutoff, decoder: JSONDecoder())) ?? []
+    }
+
+    public func append(_ sample: ThermalSample, retentionDays: Int) throws {
         createDirectoryIfNeeded()
         try appendEncoded(sample, to: historyURL)
 
@@ -87,7 +117,7 @@ actor HistoryStore {
         }
     }
 
-    func beginActiveIncident(
+    public func beginActiveIncident(
         id: UUID,
         name: String,
         startedAt: Date,
@@ -116,7 +146,7 @@ actor HistoryStore {
         activeWritesSinceSync = 0
     }
 
-    func appendActiveIncident(_ sample: ThermalSample) throws {
+    public func appendActiveIncident(_ sample: ThermalSample) throws {
         guard FileManager.default.fileExists(atPath: activeIncidentMetadataURL.path) else {
             throw CocoaError(.fileNoSuchFile)
         }
@@ -134,7 +164,7 @@ actor HistoryStore {
         }
     }
 
-    func saveIncidents(
+    public func saveIncidents(
         _ incidents: [ThermalIncident],
         revision: Int,
         clearActiveIncident: Bool = false
@@ -147,22 +177,22 @@ actor HistoryStore {
         if clearActiveIncident { clearActiveIncidentFiles() }
     }
 
-    func flushActiveIncident() throws {
+    public func flushActiveIncident() throws {
         try activeIncidentHandle?.synchronize()
         activeWritesSinceSync = 0
     }
 
-    func discardActiveIncident() {
+    public func discardActiveIncident() {
         clearActiveIncidentFiles()
     }
 
-    func clearHistory() throws {
+    public func clearHistory() throws {
         if FileManager.default.fileExists(atPath: historyURL.path) {
             try FileManager.default.removeItem(at: historyURL)
         }
     }
 
-    nonisolated var storageDirectory: URL { directory }
+    public nonisolated var storageDirectory: URL { directory }
 
     private func writeIncidents(_ incidents: [ThermalIncident]) throws {
         let encoder = JSONEncoder()
@@ -245,6 +275,22 @@ actor HistoryStore {
 
     private func createDirectoryIfNeeded() {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    /// Deletes compaction temporaries left behind by a crash or force-quit.
+    ///
+    /// `prune` removes its own temporary on every normal exit path, but a SIGKILL
+    /// mid-compaction strands a copy of the surviving history — tens of megabytes
+    /// on a mature install — that nothing would ever reclaim.
+    private func removeOrphanedPruneTemporaries() {
+        let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        for url in contents ?? [] where url.lastPathComponent.hasPrefix("history-")
+            && url.pathExtension == "tmp" {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private func loadSamples(

@@ -41,7 +41,7 @@ public enum ThermalEventAnalyzer {
     public static func events(
         samples: [ThermalSample],
         thresholdCelsius: Double,
-        recoveryMarginCelsius: Double = 3,
+        recoveryMarginCelsius: Double = thermalRecoveryMarginCelsius,
         isCancelled: () -> Bool = { false }
     ) -> [ThermalEvent] {
         guard !isCancelled() else { return [] }

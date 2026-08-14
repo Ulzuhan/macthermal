@@ -13,6 +13,12 @@ DEPLOY := -target $(ARCH)-apple-macos13.0
 # The actor / @MainActor / Sendable-value-model architecture is data-race clean,
 # so the whole project builds under the Swift 6 language mode.
 SWIFT6 := -swift-version 6
+# Whole-module optimization. `-O` alone leaves swiftc in primary-file mode, which
+# optimizes each file in isolation: no inlining or specialization across the
+# shared core into the front-ends. This is what Xcode's Release configuration
+# sets (SWIFT_COMPILATION_MODE = wholemodule). Only for the shipped `-O` builds —
+# `make test` stays in the default mode so it compiles fast.
+OPT := -O -wmo
 
 # Version stamped into the .app bundle. Pass APP_VERSION=… to override (the
 # release CI passes the exact tag); otherwise it's derived from `git describe`,
@@ -35,7 +41,7 @@ all: build
 build: $(BIN)
 
 $(BIN): $(CLI_SRC)
-	swiftc -O $(DEPLOY) $(SWIFT6) -framework IOKit -o $(BIN) $(CLI_SRC)
+	swiftc $(OPT) $(DEPLOY) $(SWIFT6) -framework IOKit -o $(BIN) $(CLI_SRC)
 
 run: build
 	./$(BIN)
@@ -52,7 +58,7 @@ test: $(TEST_SRC)
 gui: $(APP)
 
 $(APP): $(GUI_SRC) Resources/Info.plist Resources/AppIcon.icns
-	swiftc -O $(DEPLOY) $(SWIFT6) -parse-as-library -framework IOKit -framework SwiftUI -framework AppKit \
+	swiftc $(OPT) $(DEPLOY) $(SWIFT6) -parse-as-library -framework IOKit -framework SwiftUI -framework AppKit \
 		-framework ServiceManagement -framework Charts -framework UserNotifications \
 		-o $(GUI_BIN) $(GUI_SRC)
 	rm -rf $(APP)

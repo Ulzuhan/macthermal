@@ -47,13 +47,21 @@ enum TemperatureChartScope: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Which component scopes the chart can offer.
+    ///
+    /// The set of sensor categories a Mac reports does not change between
+    /// samples, so this reads the most recent one instead of unioning the whole
+    /// rendered window — which ran on the main actor over up to a thousand
+    /// samples every time the history revision changed. Older samples are
+    /// scanned only as a fallback, for the case where the newest sample happens
+    /// to carry no category peaks at all.
     static func available(in samples: [ThermalSample]) -> [TemperatureChartScope] {
-        var categoryKeys = Set<String>()
-        for sample in samples {
-            categoryKeys.formUnion(sample.categoryPeaks.keys)
+        guard let representative = samples.last(where: { !$0.categoryPeaks.isEmpty }) else {
+            return [.overall]
         }
+        let categories = Set(representative.categoryPeaks.categories.map(\.rawValue))
         return allCases.filter { scope in
-            scope == .overall || categoryKeys.contains(scope.rawValue)
+            scope == .overall || categories.contains(scope.rawValue)
         }
     }
 }

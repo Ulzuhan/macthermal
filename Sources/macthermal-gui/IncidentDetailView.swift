@@ -22,6 +22,7 @@ struct IncidentDetailView: View {
                     alertThresholdCelsius: settings.alertThresholdCelsius,
                     scope: $settings.temperatureChartScope
                 )
+                    .equatable()
                     .frame(minHeight: 280)
                 HistorySummaryGrid(samples: incident.samples, unit: settings.unit)
                 IncidentChangeView(incident: incident, unit: settings.unit)

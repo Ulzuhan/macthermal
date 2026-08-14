@@ -10,7 +10,8 @@ public struct ThermalAlertEvaluator: Sendable {
     public mutating func evaluate(
         sample: ThermalSample,
         configuration: AlertConfiguration,
-        now: Date
+        now: Date,
+        recoveryMarginCelsius: Double = thermalRecoveryMarginCelsius
     ) -> ThermalAlertReason? {
         guard configuration.enabled else {
             hotSince = nil
@@ -22,12 +23,17 @@ public struct ThermalAlertEvaluator: Sendable {
             now.timeIntervalSince($0) < configuration.cooldown
         } ?? false
 
-        // Temperature bookkeeping runs on every sample (it is no longer skipped by
-        // the pressure branch's early return), so a genuine sub-threshold dip
-        // always restarts the "continuously hot" timer.
-        if sample.hottestCelsius >= configuration.thresholdCelsius {
-            if hotSince == nil { hotSince = now }
-        } else {
+        // Temperature bookkeeping runs on every sample (it is not skipped by the
+        // pressure branch's early return). Entering the hot state needs a reading
+        // at or above the threshold; leaving it needs one a full recovery margin
+        // below — the same hysteresis `AutomaticIncidentDetector` and
+        // `ThermalEventAnalyzer` apply. Without the margin, one noisy reading
+        // 0.2 °C under the threshold restarts the "continuously hot" timer, and at
+        // the 2-second cadence used under load the sustained alert never fires for
+        // an episode that still gets recorded as an incident.
+        if hotSince == nil {
+            if sample.hottestCelsius >= configuration.thresholdCelsius { hotSince = now }
+        } else if sample.hottestCelsius <= configuration.thresholdCelsius - max(0, recoveryMarginCelsius) {
             hotSince = nil
         }
 
