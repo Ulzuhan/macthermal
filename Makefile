@@ -32,8 +32,10 @@ REPORT   := Sources/MacThermalCore/JSONReport.swift
 CLI_SRC  := $(SHARED) $(REPORT) Sources/macthermal/main.swift
 GUI_SRC  := $(SHARED) $(wildcard Sources/macthermal-gui/*.swift)
 TEST_SRC := $(SHARED) $(REPORT) Tests/Tests.swift
+# Exercise the real monitor with simulated hardware/XPC boundaries.
+STARTUP_SRC := $(filter-out Sources/macthermal-gui/MenuBarApp.swift Sources/macthermal-gui/SMCReader.swift Sources/macthermal-gui/ProcessSampler.swift Sources/macthermal-gui/LoginItemManager.swift Sources/macthermal-gui/LocalNotificationManager.swift,$(GUI_SRC)) IntegrationTests/IncidentStartupTests.swift
 
-.PHONY: all build run watch test gui icon open clean install uninstall
+.PHONY: all build run watch test test-startup gui icon open clean install uninstall
 
 all: build
 
@@ -53,6 +55,14 @@ watch: build
 test: $(TEST_SRC)
 	@swiftc $(SWIFT6) -parse-as-library -framework IOKit -o $(TEST_BIN) $(TEST_SRC)
 	@./$(TEST_BIN)
+	@$(MAKE) test-startup
+
+test-startup: $(STARTUP_SRC)
+	@TEST_EXEC=$$(mktemp -t macthermal-startup); trap 'rm -f "$$TEST_EXEC"' EXIT; \
+		swiftc $(SWIFT6) -parse-as-library -framework IOKit -framework SwiftUI -framework AppKit \
+		-framework ServiceManagement -framework Charts -framework UserNotifications \
+		-o "$$TEST_EXEC" $(STARTUP_SRC) && \
+		"$$TEST_EXEC" && "$$TEST_EXEC" --automatic
 
 # ---- Menu-bar GUI (.app bundle) ----
 gui: $(APP)

@@ -504,6 +504,9 @@ struct Tests {
             now: Date(timeIntervalSince1970: 140)
         ) == .stop, "temperature incident stops after sustained recovery")
 
+        // --- all threshold consumers agree through sub-threshold noise ---
+        runTemperatureHysteresisTests()
+
         // --- derived event timeline with threshold hysteresis ---
         let eventSamples = [
             sample(seconds: 0, hotspot: 80),
@@ -778,6 +781,67 @@ struct Tests {
         exit(failures == 0 ? 0 : 1)
     }
 
+    static func runTemperatureHysteresisTests() {
+        var detector = AutomaticIncidentDetector()
+        var evaluator = ThermalAlertEvaluator()
+        let configuration = AlertConfiguration(
+            enabled: true, thresholdCelsius: 90, sustainedDuration: 60,
+            cooldown: 900, notifyOnThermalPressure: false
+        )
+        let noisySamples = [
+            sample(seconds: 0, hotspot: 95),
+            sample(seconds: 30, hotspot: 88),
+            sample(seconds: 60, hotspot: 94),
+        ]
+        var transitions: [AutomaticIncidentTransition] = []
+        var alerts: [ThermalAlertReason] = []
+        for sample in noisySamples {
+            if let transition = detector.evaluate(
+                sample: sample, pressureEnabled: false, temperatureEnabled: true,
+                thresholdCelsius: 90, sustainedDuration: 60, recoveryDuration: 60, now: sample.timestamp
+            ) { transitions.append(transition) }
+            if let alert = evaluator.evaluate(sample: sample, configuration: configuration, now: sample.timestamp) {
+                alerts.append(alert)
+            }
+        }
+        expect(transitions == [.start(trigger: .automaticHighTemperature, state: "nominal", severity: .ok)],
+               "a dip inside the recovery margin does not postpone automatic capture")
+        expect(alerts == [.sustainedTemperature(celsius: 94)],
+               "automatic capture and notifications both trigger after the same noisy hot minute")
+        expect(ThermalEventAnalyzer.events(samples: noisySamples, thresholdCelsius: 90).map(\.kind)
+               == [.temperatureExceeded], "the same noisy minute remains one hot period in the timeline")
+
+        func evaluate(_ detector: inout AutomaticIncidentDetector, _ seconds: Double, _ temperature: Double,
+                      enabled: Bool = true, margin: Double = thermalRecoveryMarginCelsius) -> AutomaticIncidentTransition? {
+            detector.evaluate(
+                sample: sample(seconds: seconds, hotspot: temperature),
+                pressureEnabled: false, temperatureEnabled: enabled,
+                thresholdCelsius: 90, sustainedDuration: 60, recoveryDuration: 60,
+                now: Date(timeIntervalSince1970: seconds), recoveryMarginCelsius: margin
+            )
+        }
+
+        var boundary = AutomaticIncidentDetector()
+        _ = evaluate(&boundary, 0, 95)
+        _ = evaluate(&boundary, 30, 87)
+        expect(evaluate(&boundary, 60, 94) == nil, "reaching the recovery boundary resets the sustained timer")
+        expect(evaluate(&boundary, 120, 94) != nil, "capture starts after a full new hot minute following recovery")
+
+        var neverHot = AutomaticIncidentDetector()
+        _ = evaluate(&neverHot, 0, 88)
+        expect(evaluate(&neverHot, 60, 88) == nil, "readings inside the margin cannot start a hot period")
+
+        var disabled = AutomaticIncidentDetector()
+        _ = evaluate(&disabled, 0, 95)
+        _ = evaluate(&disabled, 30, 95, enabled: false)
+        expect(evaluate(&disabled, 60, 95) == nil, "disabling temperature capture clears its pending hot period")
+
+        var customMargin = AutomaticIncidentDetector()
+        _ = evaluate(&customMargin, 0, 95, margin: 5)
+        _ = evaluate(&customMargin, 30, 86, margin: 5)
+        expect(evaluate(&customMargin, 60, 94, margin: 5) != nil, "the sustained timer respects a custom recovery margin")
+    }
+
     /// `HistoryStore` against a scratch directory — no SMC, no Application
     /// Support. This is the part of the app most likely to lose user data: it
     /// appends NDJSON, tolerates a line a crash cut in half, compacts through a
@@ -814,6 +878,37 @@ struct Tests {
             retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
         )
         expect(loaded.samples.count == 3, "a truncated final line is skipped, earlier samples survive")
+
+        // Appending can happen before load() on relaunch. A partial last record
+        // must not consume the next valid sample, even when pruning is skipped.
+        do {
+            let afterCrash = sample(at: now, hotspot: 81)
+            let nextStore = HistoryStore(directory: roundTripDirectory)
+            try await nextStore.append(afterCrash, retentionDays: 7)
+            try await nextStore.append(sample(at: now.addingTimeInterval(30), hotspot: 82), retentionDays: 7)
+            let afterAppend = await nextStore.load(
+                retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+            )
+            expect(afterAppend.samples.count == 5, "both valid appends after a truncated tail survive relaunch")
+            expect(afterAppend.samples.contains { $0.id == afterCrash.id },
+                   "the first post-crash sample is not joined to the truncated JSON")
+
+            // A complete value lacking only its newline is valid and must also
+            // survive; blindly truncating the last line would destroy it.
+            let complete = sample(at: now, hotspot: 83)
+            try JSONEncoder().encode(complete).write(to: historyURL)
+            try await nextStore.append(afterCrash, retentionDays: 7)
+            let completeTail = await nextStore.reloadHistoryWindow(retentionDays: 7, inMemoryDays: 7)
+            expect(completeTail.map(\.id) == [complete.id, afterCrash.id],
+                   "a complete final JSON value without a newline survives the next append")
+
+            try Data().write(to: historyURL)
+            try await nextStore.append(afterCrash, retentionDays: 7)
+            let emptyFile = await nextStore.reloadHistoryWindow(retentionDays: 7, inMemoryDays: 7)
+            expect(emptyFile.map(\.id) == [afterCrash.id], "appending to an existing empty file works")
+        } catch {
+            expect(false, "post-crash append regression setup and writes succeed: \(error)")
+        }
 
         // --- compaction drops samples past retention, keeps the rest ---
         let pruneDirectory = scratchDirectory()
@@ -865,6 +960,34 @@ struct Tests {
             retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
         )
         expect(recoveredAgain.incidents.count == 1, "recovery does not duplicate on a later launch")
+
+        // The monitor's startup barrier must establish this ordering: install
+        // recovered incidents first, then open and finalize the new recording.
+        do {
+            let currentID = UUID()
+            let currentSample = sample(at: now, hotspot: 93)
+            try await relaunchedStore.beginActiveIncident(
+                id: currentID, name: "Current session", startedAt: now,
+                trigger: .automaticThermalPressure, samples: []
+            )
+            try await relaunchedStore.appendActiveIncident(currentSample)
+            let currentIncident = ThermalIncident(
+                id: currentID, name: "Current session", startedAt: now, endedAt: now,
+                samples: [currentSample], trigger: .automaticThermalPressure
+            )
+            try await relaunchedStore.saveIncidents(
+                [currentIncident] + recovered.incidents, revision: 1, clearActiveIncident: true
+            )
+            let nextLaunch = await HistoryStore(directory: recoveryDirectory).load(
+                retentionDays: 7, inMemoryDays: 7, incidentRetentionDays: 30, maximumStoredIncidents: 25
+            )
+            expect(Set(nextLaunch.incidents.map(\.id)) == Set([incidentID, currentID]),
+                   "recovery followed by a new recording preserves both incident identities")
+            expect(nextLaunch.incidents.first { $0.id == currentID }?.samples == [currentSample],
+                   "the new incident keeps its journaled sample after recovery")
+        } catch {
+            expect(false, "recording after recovery succeeds: \(error)")
+        }
 
         // --- a crash mid-compaction must not strand its temporary ---
         let orphanDirectory = scratchDirectory()

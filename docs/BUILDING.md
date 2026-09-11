@@ -18,6 +18,7 @@ files** — the difference is the driver and what each can produce.
 | Build the CLI | ✅ `make` | ✅ `swift build` | ✅ Run `macthermal` |
 | Run the CLI | ✅ `make run` | ✅ `swift run macthermal` | ✅ ⌘R |
 | Run the logic tests | ✅ `make test` | ✅ `swift run macthermalTests` | ✅ Run `macthermalTests` |
+| Run monitor startup regressions (simulated SMC/XPC) | ✅ `make test-startup` (also in `make test`) | — | — |
 | Build the GUI **binary** | ✅ | ✅ | ✅ |
 | Build the runnable menu-bar **`.app`** | ✅ `make gui` | ❌ | ❌ |
 | Editor autocomplete / indexing | — | ✅ | ✅ |
@@ -49,7 +50,7 @@ make gui        # menu-bar app   -> ./MacThermal.app   (ad-hoc signed, LSUIEleme
 make open       # build the app and launch it
 make run        # build + run the CLI
 make watch      # build + run the live dashboard (1s refresh)
-make test       # pure-logic tests — no SMC hardware needed (CI-friendly)
+make test       # core + monitor startup tests — no SMC hardware needed (CI-friendly)
 make install    # copy the CLI to $(PREFIX)/bin   (PREFIX defaults to /usr/local)
 make clean
 ```

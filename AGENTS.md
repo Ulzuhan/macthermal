@@ -28,7 +28,8 @@ source tree satisfies both. Targets macOS 13+, Apple Silicon and Intel.
 make            # CLI       -> ./macthermal
 make gui        # menu-bar  -> ./MacThermal.app (ad-hoc signed, LSUIElement)
 make open       # build the app and launch it
-make test       # pure-logic test suite — NO SMC hardware needed (CI-friendly)
+make test       # core + monitor startup tests — NO SMC hardware needed (CI-friendly)
+make test-startup # only monitor startup tests, with simulated hardware/XPC
 make run        # build + run the CLI
 make watch      # build + run the live dashboard (1s)
 make install    # copy CLI to $(PREFIX)/bin   (PREFIX defaults to /usr/local)
@@ -74,6 +75,7 @@ SwiftUI view automatically joins the flat build.
 | `Sources/macthermal-gui/ThermalMonitor.swift` | Main-actor presentation state and polling orchestration. It coordinates the isolated SMC/process/history/notification actors. |
 | `Sources/macthermal-gui/Thermal*State.swift`, `IncidentRecordingState.swift`, `AppStatusState.swift` | Narrow SwiftUI observation domains for live readings, stored diagnostics, two-second recording progress, and app integration. Historical screens must not observe the live sensor or incident-counter paths. |
 | `Tests/Tests.swift` | Standalone test runner (`@main`), no XCTest. |
+| `IntegrationTests/IncidentStartupTests.swift` | Production-monitor startup tests with simulated sensor/XPC/process services and scratch storage; compiled by `make test-startup` (also included in `make test`). |
 | `Package.swift` | SwiftPM manifest (editor/IDE convenience only — see "What this is"). Core is target `MacThermalCore`; `macthermal`, `macthermal-gui`, `macthermalTests` depend on it. |
 | `Resources/Info.plist` | App bundle plist (`LSUIElement`, bundle id, exec name, `CFBundleIconFile`). |
 | `Resources/AppIcon.icns` | App icon (committed). Regenerate with `make icon`. |
@@ -109,6 +111,10 @@ see `Makefile`: `SHARED`, `CLI_SRC`, `GUI_SRC`, `TEST_SRC`.
   (~0.7 s for 14 days at 30 s). Anything recorded during the load is reconciled
   by `ThermalArchiveState.installLoadedHistory`, which keeps samples newer than
   the newest decoded one. Do not reorder this back so the menu bar waits on I/O.
+  Every new incident (manual or automatic) must await `initializationTask`
+  before changing recording state or opening a journal. That task includes
+  recovery and installation of archived incidents; starting sooner can overwrite
+  the previous journal or let recovery consume the current session's recording.
 - **Retention is re-read, not just re-filtered.** History is loaded once with an
   `inMemoryDays` window, so `ThermalMonitor` subscribes to `settings.retentionDays`
   and reloads through `HistoryStore.reloadHistoryWindow`. Without it, raising
@@ -127,6 +133,8 @@ see `Makefile`: `SHARED`, `CLI_SRC`, `GUI_SRC`, `TEST_SRC`.
   earlier data. `ThermalSample.categoryAverages` is optional because samples
   recorded before component-average charts only contain `categoryPeaks`; do not
   make that field required without a storage migration.
+  Appending must also check the final byte and insert a missing newline; otherwise
+  a truncated last record consumes the first valid sample written after relaunch.
 - **One threshold, one hysteresis.** Notifications, automatic capture, and the
   event timeline all read the user's hotspot threshold, and all three end a hot
   period at `thermalRecoveryMarginCelsius` (3 °C) below it. Keep them on the

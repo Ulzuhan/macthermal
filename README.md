@@ -36,7 +36,7 @@ Prefer building from source? See **[Build](#build)** below.
 make            # CLI  -> ./macthermal
 make gui        # GUI  -> ./MacThermal.app (menu-bar app)
 make open       # build the app and launch it
-make test       # run the pure-logic test suite (no SMC hardware needed)
+make test       # core + monitor startup tests (no SMC hardware needed)
 make install    # copy the CLI to /usr/local/bin (PREFIX=... to change)
 ```
 

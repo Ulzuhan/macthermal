@@ -233,10 +233,19 @@ public actor HistoryStore {
         var data = try JSONEncoder().encode(value)
         data.append(0x0A)
         if FileManager.default.fileExists(atPath: url.path) {
-            let handle = try FileHandle(forWritingTo: url)
-            try handle.seekToEnd()
+            let handle = try FileHandle(forUpdating: url)
+            defer { try? handle.close() }
+            let end = try handle.seekToEnd()
+            if end > 0 {
+                try handle.seek(toOffset: end - 1)
+                let lastByte = try handle.read(upToCount: 1)
+                // A crash can leave a partial record or a complete JSON value
+                // without its newline. Isolate that tail before appending, so
+                // the next valid sample cannot be swallowed by the same line.
+                if lastByte != Data([0x0A]) { data.insert(0x0A, at: 0) }
+                try handle.seek(toOffset: end)
+            }
             try handle.write(contentsOf: data)
-            try handle.close()
         } else {
             try data.write(to: url, options: .atomic)
         }
