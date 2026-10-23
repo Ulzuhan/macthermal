@@ -19,6 +19,14 @@ files** — the difference is the driver and what each can produce.
 | Run the CLI | ✅ `make run` | ✅ `swift run macthermal` | ✅ ⌘R |
 | Run the logic tests | ✅ `make test` | ✅ `swift run macthermalTests` | ✅ Run `macthermalTests` |
 | Run monitor startup regressions (simulated SMC/XPC) | ✅ `make test-startup` (also in `make test`) | — | — |
+
+`IntegrationTests/` is deliberately **not** a SwiftPM target, which is why the
+middle and right columns above are empty for it. The file declares its own
+`SMCReader`, `ProcessSampler`, `LoginItemManager` and `LocalNotificationManager`
+actors that stand in for the real ones, so it cannot be compiled alongside them
+as an ordinary target — `make test-startup` builds the GUI sources *minus* those
+four (plus `MenuBarApp`) and links the fixtures in their place. CI covers it
+because `make test` invokes it, but Xcode and `swift build` will not run it.
 | Build the GUI **binary** | ✅ | ✅ | ✅ |
 | Build the runnable menu-bar **`.app`** | ✅ `make gui` | ❌ | ❌ |
 | Editor autocomplete / indexing | — | ✅ | ✅ |

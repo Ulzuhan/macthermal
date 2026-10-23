@@ -98,10 +98,10 @@ struct IncidentStartupTests {
         // start. Correctness assertions below inspect the recovered data, not
         // elapsed time. This intentionally reproduces a slow launch service.
         try await Task.sleep(for: .milliseconds(100))
-        let startedBeforeRecovery = monitor.isRecordingIncident
+        let startedBeforeRecovery = monitor.recordingState.isRecording
         await StartupGate.shared.release()
         await manualStart?.value
-        while monitor.incidentSampleCount == 0 { await Task.yield() }
+        while monitor.recordingState.sampleCount == 0 { await Task.yield() }
         await monitor.toggleIncidentRecording()
 
         let saved = await store.load(

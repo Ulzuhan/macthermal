@@ -73,6 +73,7 @@ SwiftUI view automatically joins the flat build.
 | `Sources/macthermal/main.swift` | CLI only: arg parsing, ANSI `Palette`, text rendering, entry point. Has top-level code, so it's named `main.swift`. |
 | `Sources/macthermal-gui/MenuBarApp.swift` | GUI composition root and `@main`; individual views, actors, settings, persistence, and monitoring each live in dedicated files beside it. |
 | `Sources/macthermal-gui/ThermalMonitor.swift` | Main-actor presentation state and polling orchestration. It coordinates the isolated SMC/process/history/notification actors. |
+| `Sources/macthermal-gui/IncidentRecorder.swift` | The whole incident lifecycle: start/stop, pre-roll, the active journal, duration splitting, finalization, retention pruning and persistence revisions. Split out of `ThermalMonitor`; keep incident state here, not back in the monitor. |
 | `Sources/macthermal-gui/Thermal*State.swift`, `IncidentRecordingState.swift`, `AppStatusState.swift` | Narrow SwiftUI observation domains for live readings, stored diagnostics, two-second recording progress, and app integration. Historical screens must not observe the live sensor or incident-counter paths. |
 | `Tests/Tests.swift` | Standalone test runner (`@main`), no XCTest. |
 | `IntegrationTests/IncidentStartupTests.swift` | Production-monitor startup tests with simulated sensor/XPC/process services and scratch storage; compiled by `make test-startup` (also included in `make test`). |
@@ -163,6 +164,11 @@ see `Makefile`: `SHARED`, `CLI_SRC`, `GUI_SRC`, `TEST_SRC`.
   (`ThermalSampleWindow`, `ThermalAnalytics`, `ThermalEventAnalyzer`,
   `ThermalSampleDownsampler`) stay in `MacThermalCore` so `make test` can cover
   them. Put new analysis there, not in the engine.
+- **The incident lifecycle lives in `IncidentRecorder`.** `ThermalMonitor`
+  orchestrates polling and owns live/history concerns; it holds a recorder and
+  forwards to it. Both concurrency bugs found in recent audits were in the seam
+  between those two jobs, hidden among everything else the monitor did. A new
+  incident concern belongs in the recorder.
 - **Incident cadence stays separate.** General history always follows the user's
   15/30/60-second interval. Two-second samples recorded during an incident go to
   `active-incident.ndjson` and the bounded incident segment only; mixing them
