@@ -26,9 +26,17 @@ struct MacThermalApp: App {
         } label: {
             MenuBarLabelView(settings: settings)
                 .environmentObject(monitor.liveState)
-                .onAppear {
-                    appDelegate.prepareForTermination = { [weak monitor] in
-                        await monitor?.prepareForTermination()
+                .onAppear { [monitor] in
+                    // Captured strongly on purpose. The weak capture this
+                    // replaces broke no cycle — the enclosing scene body already
+                    // holds `monitor` strongly, which is what the compiler warns
+                    // about — and it meant that if the monitor ever did go away,
+                    // termination would silently skip flushing the active
+                    // incident journal. The monitor is a `@StateObject` that
+                    // lives as long as the app, so this keeps nothing alive that
+                    // was not already.
+                    appDelegate.prepareForTermination = {
+                        await monitor.prepareForTermination()
                     }
                 }
         }

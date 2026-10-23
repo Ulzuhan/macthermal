@@ -135,6 +135,23 @@ see `Makefile`: `SHARED`, `CLI_SRC`, `GUI_SRC`, `TEST_SRC`.
   make that field required without a storage migration.
   Appending must also check the final byte and insert a missing newline; otherwise
   a truncated last record consumes the first valid sample written after relaunch.
+- **A gap in sampling is not evidence.** Evaluators that accumulate over time
+  (`ThermalAlertEvaluator`, `AutomaticIncidentDetector`) compare wall-clock
+  timestamps, but the app only observes while it is sampling. A gap larger than
+  `maximumPlausibleSampleGap` means sampling stopped — sleep, suspension, a
+  stalled refresh — so they discard their accumulated state and start over from
+  the post-gap sample, and an automatic incident that was recording is closed.
+  Without this, closing the lid on a hot Mac and opening it hours later fired a
+  "sustained temperature" alert and opened an incident on the first sample after
+  waking. Any new stateful evaluator needs the same guard.
+- **Comparison tolerances are shared, not re-picked per screen.** Both the
+  period comparison and the incident detail judge the same metrics, so both read
+  `ThermalComparisonTolerance`. A view that invents its own threshold will call
+  something a regression that the other screen calls unchanged.
+- **A delta needs its semantics, not just its sign.** `DeltaLabel` takes
+  `DeltaSemantics`: fan effort is `.contextual` (direction shown, no verdict)
+  because more cooling can accompany a lower temperature. Only use
+  `.lowerIsBetter` where lower really is better.
 - **One threshold, one hysteresis.** Notifications, automatic capture, and the
   event timeline all read the user's hotspot threshold, and all three end a hot
   period at `thermalRecoveryMarginCelsius` (3 °C) below it. Keep them on the

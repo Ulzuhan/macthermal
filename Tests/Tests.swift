@@ -773,6 +773,69 @@ struct Tests {
         expect(jumbledWindow.count == slowWindow.count + 1,
                "an out-of-order series falls back to the exhaustive filter")
 
+        // --- a gap in sampling is not evidence of continuous heat ---
+        // Closing the lid on a hot Mac used to fire "sustained temperature" on
+        // the first sample after waking, because the evaluators compared
+        // wall-clock time against a hotSince set before the Mac slept.
+        var gapEval = ThermalAlertEvaluator()
+        _ = gapEval.evaluate(sample: sample(seconds: 0, hotspot: 95), configuration: noCooldownCfg, now: at(0))
+        let afterSleep = gapEval.evaluate(
+            sample: sample(seconds: 8 * 3_600, hotspot: 95),
+            configuration: noCooldownCfg,
+            now: at(8 * 3_600)
+        )
+        expect(afterSleep == nil, "a sampling gap restarts the sustained timer instead of alerting on wake")
+        // And the timer genuinely restarts rather than being disabled: the
+        // sustained duration still elapses normally from the post-gap sample.
+        let sustainedAfterSleep = gapEval.evaluate(
+            sample: sample(seconds: 8 * 3_600 + 10, hotspot: 95),
+            configuration: noCooldownCfg,
+            now: at(8 * 3_600 + 10)
+        )
+        expect(sustainedAfterSleep == .sustainedTemperature(celsius: 95),
+               "after the gap the sustained timer runs again from the first post-gap sample")
+        // A normal cadence must not be mistaken for a gap.
+        var steadyEval = ThermalAlertEvaluator()
+        _ = steadyEval.evaluate(sample: sample(seconds: 0, hotspot: 95), configuration: noCooldownCfg, now: at(0))
+        _ = steadyEval.evaluate(sample: sample(seconds: 5, hotspot: 95), configuration: noCooldownCfg, now: at(5))
+        expect(steadyEval.evaluate(sample: sample(seconds: 10, hotspot: 95), configuration: noCooldownCfg, now: at(10))
+                == .sustainedTemperature(celsius: 95),
+               "ordinary sampling intervals do not count as a gap")
+
+        var gapDetector = AutomaticIncidentDetector()
+        _ = gapDetector.evaluate(sample: sample(seconds: 0, hotspot: 95), pressureEnabled: true,
+                                 temperatureEnabled: true, thresholdCelsius: 90, sustainedDuration: 60,
+                                 recoveryDuration: 60, now: at(0))
+        let detectorAfterSleep = gapDetector.evaluate(
+            sample: sample(seconds: 8 * 3_600, hotspot: 95), pressureEnabled: true,
+            temperatureEnabled: true, thresholdCelsius: 90, sustainedDuration: 60,
+            recoveryDuration: 60, now: at(8 * 3_600)
+        )
+        expect(detectorAfterSleep == nil, "a sampling gap does not open an automatic incident on wake")
+
+        // An incident that was recording when sampling stopped is closed, not
+        // continued across a hole it never observed.
+        var recordingDetector = AutomaticIncidentDetector()
+        _ = recordingDetector.evaluate(sample: sample(seconds: 0, hotspot: 95, severity: .warn),
+                                       pressureEnabled: true, temperatureEnabled: true, thresholdCelsius: 90,
+                                       sustainedDuration: 60, recoveryDuration: 60, now: at(0))
+        let closedByGap = recordingDetector.evaluate(
+            sample: sample(seconds: 8 * 3_600, hotspot: 95, severity: .warn), pressureEnabled: true,
+            temperatureEnabled: true, thresholdCelsius: 90, sustainedDuration: 60,
+            recoveryDuration: 60, now: at(8 * 3_600)
+        )
+        expect(closedByGap == .stop, "an active automatic incident is closed by a sampling gap")
+
+        // --- comparison tolerances are shared, not duplicated per screen ---
+        eq(ThermalComparisonTolerance.averageHotspotCelsius, 1, "average hotspot tolerance is 1 C")
+        eq(ThermalComparisonTolerance.fanUtilizationPercent, 3, "fan tolerance is 3 percent")
+        let withinTolerance = ThermalComparison(
+            baselineSamples: [sample(seconds: 0, hotspot: 70), sample(seconds: 10, hotspot: 70)],
+            currentSamples: [sample(seconds: 20, hotspot: 70.4), sample(seconds: 30, hotspot: 70.4)]
+        )
+        expect(ThermalComparisonAssessment(comparison: withinTolerance).averageHotspotTrend == .unchanged,
+               "a sub-tolerance hotspot move stays unchanged, matching what the incident view now shows")
+
         await runPersistenceTests()
 
         let tag = failures == 0 ? "ok" : "FAILED"

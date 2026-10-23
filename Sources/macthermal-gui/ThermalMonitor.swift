@@ -168,6 +168,9 @@ final class ThermalMonitor: ObservableObject {
             do {
                 try await historyStore.clearHistory()
                 archiveState.clearHistory()
+                // Otherwise the next persisted sample waits out a whole interval
+                // (up to a minute) while the user stares at an empty history.
+                lastHistoryAt = nil
             } catch {
                 presentedError = UserFacingError(message: "History could not be cleared: \(error.localizedDescription)")
             }
@@ -301,7 +304,8 @@ final class ThermalMonitor: ObservableObject {
         if let reason = alertEvaluator.evaluate(
             sample: sample,
             configuration: settings.alertConfiguration(notificationsAuthorized: notificationsAuthorized),
-            now: now
+            now: now,
+            maximumSampleGap: maximumSampleGap
         ) {
             await notificationManager.send(reason)
         }
@@ -314,7 +318,8 @@ final class ThermalMonitor: ObservableObject {
             thresholdCelsius: settings.alertThresholdCelsius,
             sustainedDuration: settings.sustainedAlertSeconds,
             recoveryDuration: settings.automaticIncidentRecoverySeconds,
-            now: now
+            now: now,
+            maximumSampleGap: maximumSampleGap
         )
         await handleAutomaticIncidentTransition(automaticTransition, now: now)
 
@@ -408,6 +413,13 @@ final class ThermalMonitor: ObservableObject {
     /// Read fresh on each reschedule rather than cached: the user can toggle Low
     /// Power Mode at any time, and the next timer picks the change up within one
     /// interval without needing a notification observer.
+    /// Derived from this monitor's own slowest cadence instead of the core's
+    /// default, so raising `lowPowerBackgroundRefreshInterval` cannot silently
+    /// turn ordinary idle polling into a "sampling stopped" verdict.
+    private var maximumSampleGap: TimeInterval {
+        lowPowerBackgroundRefreshInterval * 3
+    }
+
     private var isLowPowerModeEnabled: Bool {
         ProcessInfo.processInfo.isLowPowerModeEnabled
     }

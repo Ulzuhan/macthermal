@@ -14,6 +14,18 @@ public enum ThermalComparisonResult: Equatable, Sendable {
     case unchanged
 }
 
+/// How far a metric may move before the change is called real rather than noise.
+///
+/// Exposed because the incident detail view compares the same metrics as the
+/// period comparison and must not disagree with it about what counts as a
+/// change.
+public enum ThermalComparisonTolerance {
+    public static let averageHotspotCelsius = 1.0
+    public static let peakHotspotCelsius = 2.0
+    public static let pressureFraction = 0.01
+    public static let fanUtilizationPercent = 3.0
+}
+
 public struct ThermalComparisonAssessment: Equatable, Sendable {
     public let averageHotspotTrend: ComparisonTrend
     public let peakHotspotTrend: ComparisonTrend
@@ -37,20 +49,20 @@ public struct ThermalComparisonAssessment: Equatable, Sendable {
 
         let averageTrend = Self.lowerIsBetter(
             delta: comparison.hotspotDeltaCelsius,
-            tolerance: 1
+            tolerance: ThermalComparisonTolerance.averageHotspotCelsius
         )
         let peakTrend = Self.lowerIsBetter(
             delta: comparison.peakDeltaCelsius,
-            tolerance: 2
+            tolerance: ThermalComparisonTolerance.peakHotspotCelsius
         )
         let pressureTrend = Self.lowerIsBetter(
             delta: comparison.pressureFractionDelta,
-            tolerance: 0.01
+            tolerance: ThermalComparisonTolerance.pressureFraction
         )
         let fanTrend: ComparisonTrend
         if !comparison.fanDataAvailable {
             fanTrend = .contextual
-        } else if abs(comparison.fanDeltaPercent) <= 3 {
+        } else if abs(comparison.fanDeltaPercent) <= ThermalComparisonTolerance.fanUtilizationPercent {
             fanTrend = .unchanged
         } else {
             // Fan effort is context, not a standalone success or regression:

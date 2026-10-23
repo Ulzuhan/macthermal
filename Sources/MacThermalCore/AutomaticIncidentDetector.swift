@@ -12,6 +12,7 @@ public struct AutomaticIncidentDetector: Sendable {
     private var activeTrigger: ThermalIncidentTrigger?
     private var hotSince: Date?
     private var recoveryStartedAt: Date?
+    private var lastSampleAt: Date?
 
     public init() {}
 
@@ -24,8 +25,26 @@ public struct AutomaticIncidentDetector: Sendable {
         sustainedDuration: TimeInterval,
         recoveryDuration: TimeInterval,
         now: Date,
-        recoveryMarginCelsius: Double = thermalRecoveryMarginCelsius
+        recoveryMarginCelsius: Double = thermalRecoveryMarginCelsius,
+        maximumSampleGap: TimeInterval = maximumPlausibleSampleGap
     ) -> AutomaticIncidentTransition? {
+        // Sampling stopped and resumed (sleep, suspension, a stalled refresh).
+        // Nothing was recorded across the gap, so the sustained timer restarts —
+        // otherwise waking a hot Mac opens an incident immediately, with a
+        // pre-roll pulled from before it went to sleep. An incident that was
+        // already recording ends here too: its episode stopped being observed
+        // when sampling did, and a recording with an hours-long hole in it is
+        // not the evidence the user thinks they captured.
+        let sampledAfterGap = lastSampleAt.map {
+            now.timeIntervalSince($0) > max(0, maximumSampleGap)
+        } ?? false
+        lastSampleAt = now
+        if sampledAfterGap {
+            let wasRecording = activeTrigger != nil
+            reset()
+            if wasRecording { return .stop }
+        }
+
         guard automaticCaptureEnabled && (pressureEnabled || temperatureEnabled) else {
             let shouldStop = activeTrigger != nil
             reset()

@@ -22,14 +22,28 @@ struct IncidentChangeView: View {
                         Text("Average hotspot")
                         Text(unit.format(comparison.baseline.averageHotspotCelsius))
                         Text(unit.format(comparison.current.averageHotspotCelsius))
-                        DeltaLabel(value: converted(comparison.hotspotDeltaCelsius), suffix: unit.symbol, lowerIsBetter: true)
+                        DeltaLabel(
+                            value: converted(comparison.hotspotDeltaCelsius),
+                            suffix: unit.symbol,
+                            semantics: .lowerIsBetter,
+                            // Converted too: in Fahrenheit the core's 1 °C
+                            // tolerance is 1.8 °F, and comparing a converted
+                            // delta against a Celsius tolerance would call
+                            // ordinary noise a regression.
+                            tolerance: converted(ThermalComparisonTolerance.averageHotspotCelsius)
+                        )
                     }
                     GridRow {
                         Text("Fan load")
                         Text(comparison.baseline.hasFanData ? percent(comparison.baseline.averageFanUtilization) : "Not available")
                         Text(comparison.current.hasFanData ? percent(comparison.current.averageFanUtilization) : "Not available")
                         if comparison.fanDataAvailable {
-                            DeltaLabel(value: comparison.fanDeltaPercent, suffix: "%", lowerIsBetter: true)
+                            DeltaLabel(
+                                value: comparison.fanDeltaPercent,
+                                suffix: "%",
+                                semantics: .contextual,
+                                tolerance: ThermalComparisonTolerance.fanUtilizationPercent
+                            )
                         } else {
                             Text("No comparison")
                                 .foregroundStyle(.secondary)

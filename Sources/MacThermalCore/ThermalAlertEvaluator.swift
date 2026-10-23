@@ -4,6 +4,7 @@ public struct ThermalAlertEvaluator: Sendable {
     private var hotSince: Date?
     private var lastNotificationAt: Date?
     private var pressureWasActive = false
+    private var lastSampleAt: Date?
 
     public init() {}
 
@@ -11,8 +12,28 @@ public struct ThermalAlertEvaluator: Sendable {
         sample: ThermalSample,
         configuration: AlertConfiguration,
         now: Date,
-        recoveryMarginCelsius: Double = thermalRecoveryMarginCelsius
+        recoveryMarginCelsius: Double = thermalRecoveryMarginCelsius,
+        maximumSampleGap: TimeInterval = maximumPlausibleSampleGap
     ) -> ThermalAlertReason? {
+        // A gap far larger than the sampling cadence means nothing was observed
+        // in between — the Mac slept, the app was suspended, a refresh stalled.
+        // The elapsed wall-clock time is not evidence of continuous heat, so the
+        // sustained timer starts over from this sample instead of treating the
+        // gap as the hot period it never measured. Without this, closing the lid
+        // on a hot Mac and opening it hours later fires "sustained temperature"
+        // on the very first sample after waking.
+        let sampledAfterGap = lastSampleAt.map {
+            now.timeIntervalSince($0) > max(0, maximumSampleGap)
+        } ?? false
+        lastSampleAt = now
+        if sampledAfterGap {
+            hotSince = nil
+            // The OS pressure state is instantaneous, so a reading from before
+            // the gap cannot suppress the rising edge of what is, to the user, a
+            // new episode.
+            pressureWasActive = false
+        }
+
         guard configuration.enabled else {
             hotSince = nil
             pressureWasActive = false

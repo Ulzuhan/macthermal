@@ -80,7 +80,9 @@ $(APP): $(GUI_SRC) Resources/Info.plist Resources/AppIcon.icns
 		echo "stamped $(APP) version $$V"
 	cp Resources/AppIcon.icns $(APP)/Contents/Resources/AppIcon.icns
 	mv $(GUI_BIN) $(APP)/Contents/MacOS/$(GUI_BIN)
-	codesign --force --sign - $(APP) >/dev/null 2>&1 || true
+	# No `|| true`: a signing failure used to be swallowed here, so `make gui`
+	# reported success and the breakage only showed up at launch.
+	codesign --force --sign - $(APP)
 	@echo "built $(APP) — launch with: open $(APP)  (or: make open)"
 
 # Regenerate the app icon from the SF Symbols thermometer (commits Resources/AppIcon.icns).

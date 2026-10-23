@@ -112,6 +112,18 @@ public func fanLevel(_ u: Double) -> (label: String, severity: Severity) {
 /// the alert for an episode the other two still record.
 public let thermalRecoveryMarginCelsius = 3.0
 
+/// Longest gap between two consecutive samples that still counts as continuous
+/// observation.
+///
+/// The app samples every 2–30 seconds while it runs, so a larger gap means
+/// sampling stopped rather than slowed: the Mac slept, the app was suspended, or
+/// a refresh stalled. Nothing was observed in that window, so wall-clock time
+/// across it is not evidence of anything — a stateful evaluator that keeps
+/// counting through it will report hours of "continuous heat" that nobody
+/// measured. Three times the slowest refresh cadence (30 s in Low Power Mode),
+/// which no healthy run reaches.
+public let maximumPlausibleSampleGap: TimeInterval = 90
+
 // MARK: - OS thermal pressure
 //
 // The Apple Silicon-supported equivalent of the legacy Intel `pmset -g therm`
