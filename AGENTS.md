@@ -88,7 +88,14 @@ see `Makefile`: `SHARED`, `CLI_SRC`, `GUI_SRC`, `TEST_SRC`.
   data model live in `Sensors.swift`. CLI and GUI must consume it, not
   reimplement it. The CLI maps `Severity` → ANSI (`Palette.paint`); the GUI maps
   `Severity` → SwiftUI `Color` (`Severity.color` in `SeverityColor.swift`). Don't
-  push color/formatting concerns down into the sensor layer.
+  push color/formatting concerns down into the sensor layer. Those GUI tints are
+  deliberately **not** the system colors: `.yellow`/`.orange`/`.green`/`.red` are
+  built for fills and dark backgrounds and measured 1.35–3.18:1 as text on this
+  app's light backgrounds, all below WCAG AA. `SeverityPalette` holds darkened
+  light-mode variants behind a dynamic `NSColor` (no asset catalog — the flat
+  `swiftc` build has nowhere for one) and clears 4.5:1 in both appearances. Keep
+  new severity tints there, and keep a colored value paired with
+  `severity.symbol` so color is never the only channel.
 - **GUI concurrency.** The IOKit connection is non-`Sendable` and lives inside
   the `SMCReader` **actor**, so every read runs off the main thread; only the
   immutable, `Sendable` `Snapshot` crosses back to `@MainActor`. Do not access

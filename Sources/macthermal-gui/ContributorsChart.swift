@@ -13,7 +13,11 @@ struct ContributorsChart: View {
                 x: .value("CPU while hot", item.hotAverageCPUPercent),
                 y: .value("Process", item.processName)
             )
-            .foregroundStyle(by: .value("Process", item.processName))
+            // One accent instead of a colour per process: the process name is
+            // already the Y axis and the legend is hidden, so a categorical
+            // scale encoded nothing while pulling in whatever contrast the
+            // automatic palette happened to pick.
+            .foregroundStyle(Color.accentColor)
             .annotation(position: .trailing) {
                 Text("\(item.hotAverageCPUPercent.formatted(.number.precision(.fractionLength(0))))%")
                     .font(.callout)

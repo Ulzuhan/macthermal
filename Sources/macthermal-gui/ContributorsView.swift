@@ -30,13 +30,18 @@ struct ContributorsView: View {
                     systemImage: "bolt.horizontal.circle"
                 )
             } else {
-                VStack(alignment: .leading, spacing: DesignMetrics.sectionSpacing) {
-                    ContributorExplanationView()
-                    ContributorsChart(contributors: Array(contributors.prefix(8)))
-                        .frame(minHeight: 230)
-                    ContributorsTable(contributors: contributors)
+                // The other four dashboard sections scroll; this one did not,
+                // and its explanation plus two 220–230 pt minimums already
+                // reach the window's 580 pt floor before any text scaling.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: DesignMetrics.sectionSpacing) {
+                        ContributorExplanationView()
+                        ContributorsChart(contributors: Array(contributors.prefix(8)))
+                            .frame(minHeight: 230)
+                        ContributorsTable(contributors: contributors)
+                    }
+                    .padding()
                 }
-                .padding()
             }
         }
         .navigationTitle("Likely Contributors")

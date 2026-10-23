@@ -16,8 +16,12 @@ struct ContributorsTable: View {
                 Text("\(item.peakCPUPercent.formatted(.number.precision(.fractionLength(1))))%")
             }
             TableColumn("Pattern") { item in
+                // Deliberately not tinted: a pattern describes *how* a process
+                // used CPU, not how bad it is. Borrowing the severity palette
+                // made the whole column read as a wall of warnings, and the
+                // symbol already tells the two apart.
                 Label(item.pattern.label, systemImage: patternSymbol(item.pattern))
-                    .foregroundStyle(patternColor(item.pattern))
+                    .foregroundStyle(.secondary)
                     .help(item.pattern.detail)
             }
             TableColumn("Samples") { item in
@@ -31,13 +35,6 @@ struct ContributorsTable: View {
         switch pattern {
         case .steadyLoad:        "flame.fill"
         case .tracksTemperature: "chart.line.uptrend.xyaxis"
-        }
-    }
-
-    private func patternColor(_ pattern: ContributionPattern) -> Color {
-        switch pattern {
-        case .steadyLoad:        .orange
-        case .tracksTemperature: .yellow
         }
     }
 }
