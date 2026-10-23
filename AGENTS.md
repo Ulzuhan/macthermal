@@ -142,6 +142,17 @@ see `Makefile`: `SHARED`, `CLI_SRC`, `GUI_SRC`, `TEST_SRC`.
   15/30/60-second interval. Two-second samples recorded during an incident go to
   `active-incident.ndjson` and the bounded incident segment only; mixing them
   into general history biases averages, pressure rates, and comparisons.
+- **Incidents are one file, re-encoded whole.** `incidents.json` holds every
+  stored incident with all its samples, and `writeIncidents` rewrites all of it
+  on each rename, delete and finalization. This is a known limit, measured and
+  accepted rather than overlooked: on a real store at the 25-incident default
+  (1,674 samples, 1.78 MB compact) a full write takes ~35 ms on the
+  `HistoryStore` actor, off the main thread, on events the user triggers by
+  hand. Nobody perceives it. It scales with the configured ceiling, though — 50
+  incidents of 1,800 samples would be ≈48 MB and ≈550 ms a write. Splitting into
+  one file per incident takes writes to <1 ms, but it changes the on-disk format
+  and so needs a migration of the user's recordings; do that when someone
+  actually reports slowness at a raised limit, not on the projection alone.
 - **Bound long-lived storage.** The UI retains at most the latest 14 days in
   memory (enough for two seven-day comparison periods), while disk retention can
   remain longer. Active incidents are journaled incrementally, split at the

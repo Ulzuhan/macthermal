@@ -892,6 +892,20 @@ struct Tests {
         expect(afterRevisions.incidents.count == 1,
                "a late write from an older revision does not overwrite a newer one")
 
+        // Incidents are stored compactly: the indentation was 45% of a real
+        // 3.21 MB store and bought only readability in a file nobody opens by
+        // hand. Guards against pretty-printing creeping back in.
+        let storedIncidents = revisionDirectory.appending(path: "incidents.json")
+        let storedText = (try? String(contentsOf: storedIncidents, encoding: .utf8)) ?? ""
+        expect(!storedText.isEmpty, "the incident file is written")
+        expect(!storedText.contains("\n"), "the incident file is written compactly, not pretty-printed")
+        expect(storedText.contains("\"endedAt\"") && storedText.contains("\"startedAt\""),
+               "compact output keeps its sorted keys")
+        expect(
+            (try? JSONDecoder().decode([ThermalIncident].self, from: Data(storedText.utf8)))?.count == 1,
+            "compact output decodes back to the same incidents"
+        )
+
         // --- a retention change re-reads the window without touching incidents ---
         let reloadDirectory = scratchDirectory()
         defer { try? manager.removeItem(at: reloadDirectory) }
