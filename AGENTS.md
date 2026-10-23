@@ -94,6 +94,13 @@ see `Makefile`: `SHARED`, `CLI_SRC`, `GUI_SRC`, `TEST_SRC`.
   immutable, `Sendable` `Snapshot` crosses back to `@MainActor`. Do not access
   `SMC` from the main actor or a bare `DispatchQueue` closure — that
   reintroduces the data race we deliberately removed.
+  The connection can also die at runtime, and a dead one fails every key read
+  while the capture still returns an empty `Snapshot`. `SMCReader` therefore
+  treats a capture with no temperatures as a failure (every Mac reports some),
+  returns `nil` so the UI falls back to its "SMC unavailable" state, and opens a
+  replacement connection once `SensorConnectionHealth` says the failures are not
+  a hiccup. Keep that policy in the core type — the actor is a thin IOKit shell
+  that neither test build can compile.
 - **Adaptive polling.** `ThermalMonitor` uses one-shot timers at utility priority:
   nine seconds in the background, three while the panel/dashboard is visible,
   and two during elevated heat or incident recording. Keep visibility signals

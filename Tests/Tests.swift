@@ -576,6 +576,40 @@ struct Tests {
         expect(fourCharString(fourCharCode("FNum")) == "FNum", "fourChar round-trips FNum")
         expect(fourCharString(fourCharCode("F0")) == "F0  ", "fourCharCode space-pads a short key to 4 bytes")
 
+        // --- sensor connection health: a dead connection must surface as one ---
+        // The IOKit connection can die while the app runs. Every key read then
+        // fails while the capture still "succeeds" with nothing in it, so the
+        // panel showed SMC-available next to zero sensors indefinitely.
+        func connectionMoment(_ seconds: Double) -> Date { Date(timeIntervalSince1970: seconds) }
+        var health = SensorConnectionHealth()
+        expect(health.isHealthy, "a fresh connection starts healthy")
+        expect(health.recordFailure(now: connectionMoment(0)) == false,
+               "one empty capture is a hiccup, not a reconnect")
+        expect(health.recordFailure(now: connectionMoment(5)) == false,
+               "two empty captures still do not reconnect")
+        expect(health.isHealthy, "the connection is still considered healthy below the threshold")
+        expect(health.recordFailure(now: connectionMoment(10)),
+               "the third consecutive empty capture asks for a fresh connection")
+        expect(!health.isHealthy, "a connection past the failure threshold is reported unhealthy")
+
+        // Reopening is paced: a Mac with no SMC at all must not turn every
+        // refresh into an IOServiceOpen call.
+        expect(health.recordFailure(now: connectionMoment(12)) == false,
+               "a reconnect inside the backoff window is refused")
+        expect(health.recordFailure(now: connectionMoment(39)) == false,
+               "the backoff window is honored to its end")
+        expect(health.recordFailure(now: connectionMoment(41)),
+               "a reconnect is allowed again once the backoff window passes")
+
+        // One good capture clears everything, including the backoff.
+        health.recordSuccess()
+        expect(health.isHealthy, "a successful capture restores health")
+        expect(health.recordFailure(now: connectionMoment(42)) == false,
+               "the failure count restarts after a success")
+        _ = health.recordFailure(now: connectionMoment(43))
+        expect(health.recordFailure(now: connectionMoment(44)),
+               "a success clears the backoff too, so the next failure run can reconnect at once")
+
         // --- JSON encoding (round-trips into the expected shape) ---
         let temps = [TempReading(key: "TC0P", label: "CPU proximity", category: .cpu, celsius: 65.789)]
         let fans = [FanReading(index: 0, rpm: 2317.4, min: 1200, max: 5779, target: 2300)]
