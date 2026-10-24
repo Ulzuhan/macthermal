@@ -30,18 +30,24 @@ struct ContributorsView: View {
                     systemImage: "bolt.horizontal.circle"
                 )
             } else {
-                // The other four dashboard sections scroll; this one did not,
-                // and its explanation plus two 220–230 pt minimums already
-                // reach the window's 580 pt floor before any text scaling.
-                ScrollView {
-                    VStack(alignment: .leading, spacing: DesignMetrics.sectionSpacing) {
-                        ContributorExplanationView()
-                        ContributorsChart(contributors: Array(contributors.prefix(8)))
-                            .frame(minHeight: 230)
-                        ContributorsTable(contributors: contributors)
-                    }
-                    .padding()
+                // Deliberately NOT wrapped in a ScrollView, unlike the other
+                // dashboard sections. They hold charts and grids; this one
+                // holds a `Table`, which scrolls itself. Nesting the two clamps
+                // the table to its minimum height and strands the rest of the
+                // window empty below it, with two scrollbars to show for it.
+                //
+                // Instead the table is the flexible element: the explanation
+                // and the chart take what they need, the table absorbs the
+                // remaining height, and its own scrolling handles more rows
+                // than fit.
+                VStack(alignment: .leading, spacing: DesignMetrics.sectionSpacing) {
+                    ContributorExplanationView()
+                    ContributorsChart(contributors: Array(contributors.prefix(8)))
+                        .frame(minHeight: 180, maxHeight: 260)
+                    ContributorsTable(contributors: contributors)
+                        .frame(maxHeight: .infinity)
                 }
+                .padding()
             }
         }
         .navigationTitle("Likely Contributors")
