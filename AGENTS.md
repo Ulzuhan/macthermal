@@ -225,6 +225,34 @@ The binary/formula is `macthermal`, **not** `thermal`: macOS already ships
 Never name the product, install path, or formula `thermal` — it would shadow a
 system binary and be rejected by Homebrew.
 
+## Settled decisions
+
+Things that look like gaps but are deliberate. Reopen them on the stated
+trigger, not because they are missing.
+
+- **The app is English-only, and that is a decision.** There is no `.lproj`, no
+  string catalog and no `String(localized:)`, and none is planned. Two reasons.
+  The audience: an SMC diagnostic with a CLI, shipped through Homebrew and not
+  notarized — installing it means running `xattr -dr com.apple.quarantine`,
+  which selects for technical users who read English. And the CLI cannot be
+  usefully localized anyway, since its flags are English and its output is piped
+  to `jq`. The cost: `make gui` copies `Info.plist` and the icon and nothing
+  else — there is no resource pipeline and no Xcode project, so there is no
+  string-extraction build phase either. Localizing means building that pipeline
+  into the Makefile and hand-maintaining catalogs without extraction, against
+  the rule that the Makefile is the source of truth.
+  **Trigger to revisit: a Mac App Store release.** That is the first point where
+  a non-technical, non-anglophone audience is reachable at all, and it is gated
+  behind the Developer ID decision — so localization is downstream of
+  notarization, not parallel to it. Until then, keep using plain `Text` literals;
+  SwiftUI already treats them as `LocalizedStringKey`, so nothing here forecloses
+  the option.
+- **Severity colors scale with the system text size; containers now do too.**
+  Every font in the app is a semantic style, so text already scales. The panel
+  grows to its content within the screen (`AdaptivePanel`) and Settings sizes to
+  its form rather than to a fixed 600×720. Don't reintroduce a hard `width:` or
+  `height:` on either.
+
 ## Conventions
 
 - Match the surrounding style: terse, comment the *why* (especially ABI/format

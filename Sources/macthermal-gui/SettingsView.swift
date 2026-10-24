@@ -139,7 +139,11 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 600, height: 720)
+        // Was a hard 600x720. The grouped Form already scrolls on its own, so
+        // the fixed height bought nothing and cost two things: the window could
+        // not be resized, and 720 pt is awkward on a small display. An ideal
+        // height keeps the familiar default.
+        .frame(minWidth: 600, minHeight: 420, idealHeight: 720)
         .onAppear { monitor.refreshNotificationAuthorization() }
     }
 
