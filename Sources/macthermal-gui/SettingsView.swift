@@ -139,11 +139,19 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        // Was a hard 600x720. The grouped Form already scrolls on its own, so
-        // the fixed height bought nothing and cost two things: the window could
-        // not be resized, and 720 pt is awkward on a small display. An ideal
-        // height keeps the familiar default.
-        .frame(minWidth: 600, minHeight: 420, idealHeight: 720)
+        // Was a hard 600x720, which could not be resized. Making height fully
+        // flexible went too far the other way: the Settings scene ignored
+        // `idealHeight` and opened the window at 900x452, showing two and a half
+        // of six sections — wider than before and far shorter, so it fit *less*.
+        //
+        // Width is pinned again (Settings windows are conventionally fixed
+        // width, and letting it float produced the 900 pt sprawl) while height
+        // stays resizable with a floor high enough that even a collapsed window
+        // is usable.
+        .frame(
+            minWidth: 600, idealWidth: 600, maxWidth: 600,
+            minHeight: 600, idealHeight: 720, maxHeight: .infinity
+        )
         .onAppear { monitor.refreshNotificationAuthorization() }
     }
 
